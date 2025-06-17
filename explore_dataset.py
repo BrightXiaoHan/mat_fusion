@@ -1,18 +1,20 @@
 import h5py
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 # Load the .mat file (HDF5 format)
-mat_file = 'assets/sea_ice_dataset_withoutint.mat'
-data = h5py.File(mat_file, 'r')
+mat_file = "assets/sea_ice_dataset_withoutint.mat"
+data = h5py.File(mat_file, "r")
 
 # Explore the structure
 print("Keys in the .mat file:")
 for key in data.keys():
-    print(f"  {key}: {type(data[key])}, shape: {data[key].shape if hasattr(data[key], 'shape') else 'N/A'}")
+    print(
+        f"  {key}: {type(data[key])}, shape: {data[key].shape if hasattr(data[key], 'shape') else 'N/A'}"
+    )
 
 # Display basic info about each variable
-print("\nDetailed information:")
+""" print("\nDetailed information:")
 for key in data.keys():
     var = data[key]
     print(f"\n{key}:")
@@ -25,5 +27,6 @@ for key in data.keys():
             print(f"  Min: {np.min(arr)}")
             print(f"  Max: {np.max(arr)}")
             print(f"  Mean: {np.mean(arr)}")
+"""
 
 data.close()

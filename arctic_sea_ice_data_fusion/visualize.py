@@ -1,172 +1,157 @@
-import h5py
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
-import matplotlib.dates as mdates
 from datetime import datetime, timedelta
+
+import h5py
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.colors import ListedColormap
+
 
 def load_sea_ice_data(filepath):
     """Load sea ice data from HDF5 mat file"""
-    return h5py.File(filepath, 'r')
+    return h5py.File(filepath, "r")
+
 
 def matlab_datenum_to_datetime(datenum):
     """Convert MATLAB datenum to Python datetime"""
     # MATLAB datenum starts from January 1, 0000
     # Python datetime starts from January 1, 0001
     # MATLAB datenum 1 = January 1, 0001 in Python
-    return datetime.fromordinal(int(datenum)) + timedelta(days=datenum%1) - timedelta(days=366)
+    return (
+        datetime.fromordinal(int(datenum))
+        + timedelta(days=datenum % 1)
+        - timedelta(days=366)
+    )
+
 
 def visualize_sea_ice_overview(data_file, save_plots=True):
     """Create overview visualization of all sea ice datasets"""
-    
-    with h5py.File(data_file, 'r') as data:
+
+    with h5py.File(data_file, "r") as data:
         # Get dates
-        dates_matlab = np.array(data['selected_dates']).flatten()
+        dates_matlab = np.array(data["selected_dates"]).flatten()
         dates = [matlab_datenum_to_datetime(d) for d in dates_matlab]
-        
+
         # Dataset names and their corresponding data
         datasets = {
-            'Bremen ASI': 'Bremen_ASI',
-            'Bremen MODIS': 'Bremen_MODIS', 
-            'NSIDC CDR': 'NSIDC_CDR',
-            'NSIDC NT2': 'NSIDC_NT2',
-            'OSI-401': 'OSI401',
-            'OSI-408': 'OSI408'
+            "Bremen ASI": "Bremen_ASI",
+            "Bremen MODIS": "Bremen_MODIS",
+            "NSIDC CDR": "NSIDC_CDR",
+            "NSIDC NT2": "NSIDC_NT2",
+            "OSI-401": "OSI401",
+            "OSI-408": "OSI408",
         }
-        
+
+        # Coordinate mapping for each dataset
+        coord_map = {
+            "Bremen_ASI": ("x_asi", "y_asi"),
+            "Bremen_MODIS": ("modis_x", "modis_y"),
+            "NSIDC_CDR": ("x_cdr", "y_cdr"),
+            "NSIDC_NT2": ("x_nt2", "y_nt2"),
+            "OSI401": ("x_osi401", "y_osi401"),
+            "OSI408": ("x_osi408", "y_osi408"),
+        }
+
+        # Get Bremen MODIS coordinates for reference rectangle
+        modis_x = np.array(data["modis_x"]).flatten()
+        modis_y = np.array(data["modis_y"]).flatten()
+        modis_extent = (modis_x.min(), modis_x.max(), modis_y.min(), modis_y.max())
+
+        # Calculate the correct aspect ratio based on MODIS coordinates
+        modis_x_range = modis_x.max() - modis_x.min()
+        modis_y_range = modis_y.max() - modis_y.min()
+        aspect_ratio = modis_x_range / modis_y_range
+
         # Create subplot layout
         fig, axes = plt.subplots(2, 3, figsize=(20, 12))
         axes = axes.flatten()
-        
+
         for idx, (name, key) in enumerate(datasets.items()):
             ax = axes[idx]
+            x_key, y_key = coord_map[key]
             
-            # Get first time step for visualization
+            # Get coordinates and data
+            x_coords = np.array(data[x_key]).flatten()
+            y_coords = np.array(data[y_key]).flatten()
             ice_data = np.array(data[key][0])  # First time step
+
+            # Special handling for NSIDC NT2 y-coordinates
+            if key == "NSIDC_NT2":
+                y_coords = y_coords.reshape(-1)  # Ensure 1D array
+
+            # Transpose data to match coordinate dimensions
+            if ice_data.shape == (len(y_coords), len(x_coords)):
+                # Data already in correct orientation (lat, lon)
+                pass
+            elif ice_data.shape == (len(x_coords), len(y_coords)):
+                # Need to transpose to (lat, lon)
+                ice_data = ice_data.T
+            else:
+                print(f"Warning: Shape mismatch for {name}: data {ice_data.shape}, "
+                      f"x: {len(x_coords)}, y: {len(y_coords)}")
+
+            # Create visualization with real coordinates
+            # Use masked array to handle NaN values separately
+            masked_data = np.ma.masked_invalid(ice_data)
             
-            # Handle NaN values for visualization
-            ice_data_vis = np.where(np.isnan(ice_data), 0, ice_data)
+            # Create colormap: Blues for ice concentration, gray for land (NaN)
+            cmap = plt.cm.Blues.copy()
+            cmap.set_bad('gray', 1.0)  # Set color for NaN values
             
-            # Create visualization
-            im = ax.imshow(ice_data_vis, cmap='Blues', origin='lower')
-            ax.set_title(f'{name}\nShape: {ice_data.shape}', fontsize=12)
-            ax.set_xlabel('Longitude grid')
-            ax.set_ylabel('Latitude grid')
+            mesh = ax.pcolormesh(x_coords, y_coords, masked_data, 
+                                cmap=cmap, shading='auto', vmin=0, vmax=1)
+            ax.set_title(f"{name}\nShape: {ice_data.shape}", fontsize=12)
+            ax.set_xlabel("Longitude")
+            ax.set_ylabel("Latitude")
+
+            # Set consistent aspect ratio for all plots
+            ax.set_aspect(aspect_ratio)
             
-            # Add colorbar
-            plt.colorbar(im, ax=ax, shrink=0.8)
-        
+            # Invert y-axis for Bremen MODIS
+            if key == "Bremen_MODIS":
+                ax.invert_yaxis()
+
+            # Add colorbar with clear labels
+            cbar = plt.colorbar(mesh, ax=ax, shrink=0.8)
+            cbar.set_label('Sea Ice Concentration')
+            cbar.set_ticks([0, 0.5, 1])
+            cbar.set_ticklabels(['0 (open water)', '0.5', '1 (full ice)'])
+            
+            # Add MODIS extent rectangle to other datasets
+            if key != "Bremen_MODIS":
+                min_x, max_x, min_y, max_y = modis_extent
+                rect = plt.Rectangle(
+                    (min_x, min_y), 
+                    max_x - min_x, 
+                    max_y - min_y,
+                    fill=False, 
+                    edgecolor='red', 
+                    linewidth=2
+                )
+                ax.add_patch(rect)
+
         plt.tight_layout()
-        plt.suptitle('Arctic Sea Ice Datasets Overview (First Time Step)', fontsize=16, y=1.02)
-        
+        plt.suptitle(
+            "Arctic Sea Ice Datasets Overview (First Time Step)", fontsize=16, y=1.02
+        )
+
         if save_plots:
-            plt.savefig('sea_ice_overview.png', dpi=300, bbox_inches='tight')
+            plt.savefig("sea_ice_overview.png", dpi=300, bbox_inches="tight")
         plt.close()  # 关闭图形释放内存
 
-def visualize_time_series(data_file, save_plots=True):
-    """Visualize time series of sea ice extent/area"""
-    
-    with h5py.File(data_file, 'r') as data:
-        dates_matlab = np.array(data['selected_dates']).flatten()
-        dates = [matlab_datenum_to_datetime(d) for d in dates_matlab]
-        
-        datasets = {
-            'Bremen ASI': 'Bremen_ASI',
-            'Bremen MODIS': 'Bremen_MODIS',
-            'NSIDC CDR': 'NSIDC_CDR', 
-            'NSIDC NT2': 'NSIDC_NT2',
-            'OSI-401': 'OSI401',
-            'OSI-408': 'OSI408'
-        }
-        
-        plt.figure(figsize=(15, 10))
-        
-        for name, key in datasets.items():
-            ice_data = np.array(data[key])
-            
-            # Calculate valid (non-NaN) pixel count for each time step
-            valid_pixels = []
-            for t in range(ice_data.shape[0]):
-                valid_count = np.sum(~np.isnan(ice_data[t]))
-                valid_pixels.append(valid_count)
-            
-            plt.plot(dates, valid_pixels, label=name, marker='o', markersize=3)
-        
-        plt.xlabel('Date')
-        plt.ylabel('Valid Pixels Count')
-        plt.title('Sea Ice Data Coverage Over Time')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.xticks(rotation=45)
-        
-        # Format x-axis
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        plt.gca().xaxis.set_major_locator(mdates.MonthLocator(interval=3))
-        
-        plt.tight_layout()
-        
-        if save_plots:
-            plt.savefig('sea_ice_time_series.png', dpi=300, bbox_inches='tight')
-        plt.close()  # 关闭图形释放内存
-
-def visualize_dataset_comparison(data_file, time_step=0, save_plots=True):
-    """Compare different datasets at a specific time step"""
-    
-    with h5py.File(data_file, 'r') as data:
-        dates_matlab = np.array(data['selected_dates']).flatten()
-        date = matlab_datenum_to_datetime(dates_matlab[time_step])
-        
-        datasets = {
-            'Bremen ASI': 'Bremen_ASI',
-            'NSIDC CDR': 'NSIDC_CDR',
-            'NSIDC NT2': 'NSIDC_NT2', 
-            'OSI-401': 'OSI401',
-            'OSI-408': 'OSI408',
-            'Bremen MODIS': 'Bremen_MODIS',
-        }
-        
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-        axes = axes.flatten()
-        
-        for idx, (name, key) in enumerate(datasets.items()):
-            ax = axes[idx]
-            ice_data = np.array(data[key][time_step])
-            
-            # Create binary ice/no-ice visualization
-            ice_binary = np.where(np.isnan(ice_data), 0, 1)
-            
-            im = ax.imshow(ice_binary, cmap='Blues', origin='lower')
-            ax.set_title(f'{name}\n{date.strftime("%Y-%m-%d")}')
-            ax.set_xlabel('Longitude grid')
-            ax.set_ylabel('Latitude grid')
-        
-        plt.tight_layout()
-        plt.suptitle(f'Sea Ice Dataset Comparison - {date.strftime("%Y-%m-%d")}', 
-                     fontsize=16, y=1.02)
-        
-        if save_plots:
-            plt.savefig(f'sea_ice_comparison_{time_step}.png', dpi=300, bbox_inches='tight')
-        plt.close()  # 关闭图形释放内存
 
 def main():
     """Main function to run all visualizations"""
-    data_file = 'assets/sea_ice_dataset_withoutint.mat'
-    
+    data_file = "assets/sea_ice_dataset_withoutint.mat"
+
     print("Creating sea ice data visualizations...")
-    
+
     # Overview of all datasets
     print("1. Creating overview plot...")
     visualize_sea_ice_overview(data_file)
-    
-    # Time series analysis
-    print("2. Creating time series plot...")
-    visualize_time_series(data_file)
-    
-    # Dataset comparison
-    print("3. Creating comparison plot...")
-    visualize_dataset_comparison(data_file, time_step=0)
-    
+
     print("Visualizations complete!")
+
 
 if __name__ == "__main__":
     main()

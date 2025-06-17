@@ -1,0 +1,138 @@
+# 数据预处理，划分训练集和测试集
+import os
+
+import h5py
+import numpy as np
+from scipy.interpolate import griddata
+from sklearn.model_selection import train_test_split
+from tqdm import tqdm
+
+
+def preprocess_data(input_file, output_dir):
+    """
+    预处理海冰数据，包括裁剪、插值和数据集划分
+
+    参数:
+        input_file: 输入数据文件路径
+        output_dir: 预处理后数据的输出目录
+    """
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+
+    with h5py.File(input_file, "r") as data:
+        # 获取Bremen_MODIS的坐标范围作为基准
+        modis_x = np.array(data["modis_x"]).flatten()
+        modis_y = np.array(data["modis_y"]).flatten()
+        modis_extent = (modis_x.min(), modis_x.max(), modis_y.min(), modis_y.max())
+
+        # 创建目标网格（Bremen_MODIS的网格）
+        xx, yy = np.meshgrid(modis_x, modis_y)
+        target_grid = np.column_stack([xx.ravel(), yy.ravel()])
+
+        # 获取时间步数
+        num_timesteps = data["Bremen_MODIS"].shape[0]
+
+        # 初始化存储所有时间步数据的列表
+        all_inputs = []  # 存储5个输入特征
+        all_labels = []  # 存储标签(Bremen_MODIS)
+
+        # 数据集映射
+        datasets = {
+            "Bremen_ASI": ("x_asi", "y_asi"),
+            "NSIDC_CDR": ("x_cdr", "y_cdr"),
+            "NSIDC_NT2": ("x_nt2", "y_nt2"),
+            "OSI401": ("x_osi401", "y_osi401"),
+            "OSI408": ("x_osi408", "y_osi408"),
+        }
+
+        # 处理每个时间步
+        for t in tqdm(range(num_timesteps)):
+            # 存储当前时间步的5个输入特征
+            timestep_inputs = []
+
+            # 处理每个输入数据集
+            for ds_name, (x_key, y_key) in datasets.items():
+                # 获取原始坐标和数据
+                x_coords = np.array(data[x_key]).flatten()
+                y_coords = np.array(data[y_key]).flatten()
+                ice_data = np.array(data[ds_name][t])
+
+                # 创建原始网格点
+                orig_points = np.column_stack(
+                    [
+                        np.repeat(x_coords, len(y_coords)),
+                        np.tile(y_coords, len(x_coords)),
+                    ]
+                )
+
+                # 展平数据
+                flat_data = ice_data.T.ravel()  # 转置并展平以匹配坐标
+
+                # 线性插值到目标网格
+                interp_data = griddata(
+                    orig_points,
+                    flat_data,
+                    target_grid,
+                    method="linear",
+                    fill_value=np.nan,  # 使用NaN填充外推区域
+                )
+
+                # 重塑为2D数组并添加到输入列表
+                interp_data = interp_data.reshape(len(modis_y), len(modis_x))
+                timestep_inputs.append(interp_data)
+
+            # 获取标签数据 (Bremen_MODIS)
+            label_data = np.array(data["Bremen_MODIS"][t])
+
+            # 如果标签数据需要转置
+            if label_data.shape != (len(modis_y), len(modis_x)):
+                label_data = label_data.T
+
+            # 添加到总列表
+            all_inputs.append(np.stack(timestep_inputs, axis=-1))  # 堆叠为5通道
+            all_labels.append(label_data)
+
+        # 转换为numpy数组
+        all_inputs = np.array(all_inputs)
+        all_labels = np.array(all_labels)
+
+        # 处理NaN值 - 用0替换NaN（表示开放水域）
+        all_inputs = np.nan_to_num(all_inputs, nan=0.0)
+        all_labels = np.nan_to_num(all_labels, nan=0.0)
+
+        # 划分数据集 (70%训练, 15%验证, 15%测试)
+        # 首先生成索引数组
+        indices = np.arange(num_timesteps)
+
+        # 先分出训练集
+        train_idx, temp_idx = train_test_split(indices, test_size=0.3, random_state=42)
+
+        # 再将临时集分为验证集和测试集
+        val_idx, test_idx = train_test_split(temp_idx, test_size=0.5, random_state=42)
+
+        # 创建数据集字典
+        datasets = {
+            "train": {"inputs": all_inputs[train_idx], "labels": all_labels[train_idx]},
+            "val": {"inputs": all_inputs[val_idx], "labels": all_labels[val_idx]},
+            "test": {"inputs": all_inputs[test_idx], "labels": all_labels[test_idx]},
+        }
+
+        # 保存数据集
+        for split_name, split_data in datasets.items():
+            with h5py.File(os.path.join(output_dir, f"{split_name}_data.h5"), "w") as f:
+                f.create_dataset("inputs", data=split_data["inputs"])
+                f.create_dataset("labels", data=split_data["labels"])
+
+        print(f"预处理完成! 数据集已保存到: {output_dir}")
+        print(f"训练集样本数: {len(train_idx)}")
+        print(f"验证集样本数: {len(val_idx)}")
+        print(f"测试集样本数: {len(test_idx)}")
+
+
+if __name__ == "__main__":
+    # 配置路径
+    input_file = "assets/sea_ice_dataset_withoutint.mat"
+    output_dir = "cache/"
+
+    # 运行预处理
+    preprocess_data(input_file, output_dir)
