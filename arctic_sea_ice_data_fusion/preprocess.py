@@ -32,10 +32,6 @@ def preprocess_data(input_file, output_dir):
         # 获取时间步数
         num_timesteps = data["Bremen_MODIS"].shape[0]
 
-        # 初始化存储所有时间步数据的列表
-        all_inputs = []  # 存储5个输入特征
-        all_labels = []  # 存储标签(Bremen_MODIS)
-
         # 数据集映射
         datasets = {
             "Bremen_ASI": ("x_asi", "y_asi"),
@@ -45,67 +41,60 @@ def preprocess_data(input_file, output_dir):
             "OSI408": ("x_osi408", "y_osi408"),
         }
 
-        # 处理每个时间步
+        # Precompute orig_points for each dataset ONCE
+        precomputed_points = {}
+        for ds_name, (x_key, y_key) in datasets.items():
+            x_coords = np.array(data[x_key]).flatten()
+            y_coords = np.array(data[y_key]).flatten()
+            precomputed_points[ds_name] = np.column_stack(
+                [
+                    np.repeat(x_coords, len(y_coords)),
+                    np.tile(y_coords, len(x_coords)),
+                ]
+            )
+
+        # Initialize arrays directly instead of appending to lists
+        all_inputs = np.empty((num_timesteps, len(modis_y), len(modis_x), 5))
+        all_labels = np.empty((num_timesteps, len(modis_y), len(modis_x)))
+
+        # Process each timestep
         for t in tqdm(range(num_timesteps)):
-            # 存储当前时间步的5个输入特征
             timestep_inputs = []
 
-            # 处理每个输入数据集
-            for ds_name, (x_key, y_key) in datasets.items():
-                # 获取原始坐标和数据
-                x_coords = np.array(data[x_key]).flatten()
-                y_coords = np.array(data[y_key]).flatten()
+            for ds_name, _ in datasets.items():
                 ice_data = np.array(data[ds_name][t])
+                flat_data = ice_data.T.ravel()
 
-                # 创建原始网格点
-                orig_points = np.column_stack(
-                    [
-                        np.repeat(x_coords, len(y_coords)),
-                        np.tile(y_coords, len(x_coords)),
-                    ]
-                )
-
-                # 展平数据
-                flat_data = ice_data.T.ravel()  # 转置并展平以匹配坐标
-
-                # 线性插值到目标网格
+                # Use precomputed points
                 interp_data = griddata(
-                    orig_points,
+                    precomputed_points[ds_name],
                     flat_data,
                     target_grid,
                     method="linear",
-                    fill_value=np.nan,  # 使用NaN填充外推区域
-                )
+                    fill_value=np.nan,
+                ).reshape(len(modis_y), len(modis_x))
 
-                # 重塑为2D数组并添加到输入列表
-                interp_data = interp_data.reshape(len(modis_y), len(modis_x))
                 timestep_inputs.append(interp_data)
 
-            # 获取标签数据 (Bremen_MODIS)
-            label_data = np.array(data["Bremen_MODIS"][t])
+            # Stack inputs directly into preallocated array
+            all_inputs[t] = np.stack(timestep_inputs, axis=-1)
 
-            # 如果标签数据需要转置
+            # Handle label
+            label_data = np.array(data["Bremen_MODIS"][t])
             if label_data.shape != (len(modis_y), len(modis_x)):
                 label_data = label_data.T
-
-            # 添加到总列表
-            all_inputs.append(np.stack(timestep_inputs, axis=-1))  # 堆叠为5通道
-            all_labels.append(label_data)
-
-        # 转换为numpy数组
-        all_inputs = np.array(all_inputs)
-        all_labels = np.array(all_labels)
+            all_labels[t] = label_data
 
         # 处理NaN值 - 用0替换NaN（表示开放水域）
         all_inputs = np.nan_to_num(all_inputs, nan=0.0)
         all_labels = np.nan_to_num(all_labels, nan=0.0)
 
-        # 划分数据集 (70%训练, 15%验证, 15%测试)
+        # 划分数据集 (80%训练, 10%验证, 10%测试)
         # 首先生成索引数组
         indices = np.arange(num_timesteps)
 
         # 先分出训练集
-        train_idx, temp_idx = train_test_split(indices, test_size=0.3, random_state=42)
+        train_idx, temp_idx = train_test_split(indices, test_size=0.2, random_state=42)
 
         # 再将临时集分为验证集和测试集
         val_idx, test_idx = train_test_split(temp_idx, test_size=0.5, random_state=42)
