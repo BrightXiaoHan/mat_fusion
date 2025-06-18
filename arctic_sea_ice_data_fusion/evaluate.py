@@ -1,3 +1,5 @@
+import os
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -14,6 +16,50 @@ def masked_mse(pred, target, mask):
     squared_error[~valid_mask] = 0
     num_valid = valid_mask.sum()
     return squared_error.sum() / (num_valid + 1e-8)
+
+
+def visualize_sample(inputs, target, prediction, sample_idx, output_dir="cache/evaluation_visualizations"):
+    """Visualize a single sample with inputs, target, prediction and error"""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create figure with 3 rows and 3 columns
+    fig, axes = plt.subplots(3, 3, figsize=(15, 12))
+    fig.suptitle(f"Test Sample {sample_idx}", fontsize=16)
+    
+    # Input channels (5 sources)
+    for i in range(5):
+        ax = axes[i//3, i%3]
+        im = ax.imshow(inputs[i], cmap='Blues', vmin=0, vmax=1)
+        ax.set_title(f"Input Channel {i}")
+        fig.colorbar(im, ax=ax)
+    
+    # Target (row 2, col 0)
+    ax = axes[2, 0]
+    im = ax.imshow(target, cmap='Blues', vmin=0, vmax=1)
+    ax.set_title("Target")
+    fig.colorbar(im, ax=ax)
+    
+    # Prediction (row 2, col 1)
+    ax = axes[2, 1]
+    im = ax.imshow(prediction, cmap='Blues', vmin=0, vmax=1)
+    ax.set_title("Prediction")
+    fig.colorbar(im, ax=ax)
+    
+    # Error (row 2, col 2)
+    error = np.abs(prediction - target)
+    ax = axes[2, 2]
+    im = ax.imshow(error, cmap='Reds', vmin=0, vmax=1)
+    ax.set_title("Absolute Error")
+    fig.colorbar(im, ax=ax)
+    
+    # Turn off unused axes
+    axes[2, 0].axis('off')
+    axes[2, 1].axis('off')
+    axes[2, 2].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f"sample_{sample_idx}.png"), dpi=150)
+    plt.close(fig)
 
 
 def evaluate_model():
@@ -39,6 +85,7 @@ def evaluate_model():
         input_errors = {f"channel_{i}": [] for i in range(5)}
         pred_errors = []
 
+        sample_idx = 0  # Counter for visualization
         for batch in tqdm(dataloader, desc=f"Evaluating {split}"):
             inputs = batch["input"].to(device)
             labels = batch["label"].to(device)
@@ -62,6 +109,17 @@ def evaluate_model():
                 # Calculate error for this channel
                 ch_error = masked_mse(input_ch, labels, label_mask)
                 input_errors[f"channel_{ch_idx}"].append(ch_error.item())
+
+            # Visualization for test set
+            if split == "test":
+                # Convert tensors to numpy arrays
+                inputs_np = inputs.cpu().numpy().squeeze(0)  # (5, H, W)
+                target_np = labels.cpu().numpy().squeeze()    # (H, W)
+                pred_np = preds.cpu().numpy().squeeze()       # (H, W)
+                
+                # Visualize this sample
+                visualize_sample(inputs_np, target_np, pred_np, sample_idx)
+                sample_idx += 1
 
         # Save results for this split
         results[split] = {
