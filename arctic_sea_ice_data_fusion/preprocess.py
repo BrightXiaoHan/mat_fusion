@@ -56,10 +56,13 @@ def preprocess_data(input_file, output_dir):
         # Initialize arrays directly instead of appending to lists
         all_inputs = np.empty((num_timesteps, len(modis_y), len(modis_x), 5))
         all_labels = np.empty((num_timesteps, len(modis_y), len(modis_x)))
+        all_inputs_mask = np.empty((num_timesteps, len(modis_y), len(modis_x), 5), dtype=bool)
+        all_labels_mask = np.empty((num_timesteps, len(modis_y), len(modis_x)), dtype=bool)
 
         # Process each timestep
         for t in tqdm(range(num_timesteps)):
             timestep_inputs = []
+            timestep_inputs_masks = []
 
             for ds_name, _ in datasets.items():
                 ice_data = np.array(data[ds_name][t])
@@ -70,22 +73,29 @@ def preprocess_data(input_file, output_dir):
                     precomputed_points[ds_name],
                     flat_data,
                     target_grid,
-                    method="linear",
+                    method="nearest",
                     fill_value=np.nan,
                 ).reshape(len(modis_y), len(modis_x))
 
+                # Record the mask for this channel
+                channel_mask = np.isnan(interp_data)
+                timestep_inputs_masks.append(channel_mask)
                 timestep_inputs.append(interp_data)
 
             # Stack inputs directly into preallocated array
             all_inputs[t] = np.stack(timestep_inputs, axis=-1)
+            # Stack the masks for the inputs for the timestep
+            all_inputs_mask[t] = np.stack(timestep_inputs_masks, axis=-1)
 
             # Handle label
             label_data = np.array(data["Bremen_MODIS"][t])
             if label_data.shape != (len(modis_y), len(modis_x)):
                 label_data = label_data.T
             all_labels[t] = label_data
+            # Record mask for label (where NaNs exist)
+            all_labels_mask[t] = np.isnan(all_labels[t])
 
-        # 处理NaN值 - 用0替换NaN（表示开放水域）
+        # 处理NaN值 - 用0替换NaN（表示陆地）
         all_inputs = np.nan_to_num(all_inputs, nan=0.0)
         all_labels = np.nan_to_num(all_labels, nan=0.0)
 
@@ -101,9 +111,24 @@ def preprocess_data(input_file, output_dir):
 
         # 创建数据集字典
         datasets = {
-            "train": {"inputs": all_inputs[train_idx], "labels": all_labels[train_idx]},
-            "val": {"inputs": all_inputs[val_idx], "labels": all_labels[val_idx]},
-            "test": {"inputs": all_inputs[test_idx], "labels": all_labels[test_idx]},
+            "train": {
+                "inputs": all_inputs[train_idx],
+                "labels": all_labels[train_idx],
+                "inputs_mask": all_inputs_mask[train_idx],
+                "labels_mask": all_labels_mask[train_idx],
+            },
+            "val": {
+                "inputs": all_inputs[val_idx],
+                "labels": all_labels[val_idx],
+                "inputs_mask": all_inputs_mask[val_idx],
+                "labels_mask": all_labels_mask[val_idx],
+            },
+            "test": {
+                "inputs": all_inputs[test_idx],
+                "labels": all_labels[test_idx],
+                "inputs_mask": all_inputs_mask[test_idx],
+                "labels_mask": all_labels_mask[test_idx],
+            },
         }
 
         # 保存数据集
@@ -111,6 +136,8 @@ def preprocess_data(input_file, output_dir):
             with h5py.File(os.path.join(output_dir, f"{split_name}_data.h5"), "w") as f:
                 f.create_dataset("inputs", data=split_data["inputs"])
                 f.create_dataset("labels", data=split_data["labels"])
+                f.create_dataset("inputs_mask", data=split_data["inputs_mask"])
+                f.create_dataset("labels_mask", data=split_data["labels_mask"])
 
         print(f"预处理完成! 数据集已保存到: {output_dir}")
         print(f"训练集样本数: {len(train_idx)}")

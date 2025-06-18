@@ -202,3 +202,5 @@ synthetic_data/
 
 results/
 cache/
+logs/
+checkpoints/
