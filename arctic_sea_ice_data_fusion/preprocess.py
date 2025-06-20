@@ -6,6 +6,10 @@ import numpy as np
 from scipy.interpolate import griddata
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+from .visualize import visualize_timestep
 
 
 def preprocess_data(input_file, output_dir):
@@ -18,6 +22,10 @@ def preprocess_data(input_file, output_dir):
     """
     # 确保输出目录存在
     os.makedirs(output_dir, exist_ok=True)
+
+    # Create visualization directory
+    visualization_dir = os.path.join(output_dir, "visualization")
+    os.makedirs(visualization_dir, exist_ok=True)
 
     with h5py.File(input_file, "r") as data:
         # 获取Bremen_MODIS的坐标范围作为基准
@@ -46,12 +54,9 @@ def preprocess_data(input_file, output_dir):
         for ds_name, (x_key, y_key) in datasets.items():
             x_coords = np.array(data[x_key]).flatten()
             y_coords = np.array(data[y_key]).flatten()
-            precomputed_points[ds_name] = np.column_stack(
-                [
-                    np.repeat(x_coords, len(y_coords)),
-                    np.tile(y_coords, len(x_coords)),
-                ]
-            )
+            # Create meshgrid for correct coordinate mapping
+            xx, yy = np.meshgrid(x_coords, y_coords)
+            precomputed_points[ds_name] = np.column_stack([xx.ravel(), yy.ravel()])
 
         # Initialize arrays directly instead of appending to lists
         all_inputs = np.empty((num_timesteps, len(modis_y), len(modis_x), 5))
@@ -64,9 +69,27 @@ def preprocess_data(input_file, output_dir):
             timestep_inputs = []
             timestep_inputs_masks = []
 
-            for ds_name, _ in datasets.items():
+            for ds_name, (x_key, y_key) in datasets.items():
                 ice_data = np.array(data[ds_name][t])
-                flat_data = ice_data.T.ravel()
+                
+                # Get coordinate dimensions
+                x_coords = np.array(data[x_key]).flatten()
+                y_coords = np.array(data[y_key]).flatten()
+                expected_shape = (len(y_coords), len(x_coords))
+                
+                # Check and correct data orientation
+                if ice_data.shape == expected_shape:
+                    # Data is already in correct orientation (lat, lon)
+                    corrected_data = ice_data
+                elif ice_data.shape == (len(x_coords), len(y_coords)):
+                    # Need to transpose to (lat, lon)
+                    corrected_data = ice_data.T
+                else:
+                    print(f"Warning: Shape mismatch for {ds_name} at timestep {t}: "
+                          f"data {ice_data.shape}, expected {expected_shape}")
+                    corrected_data = ice_data
+                
+                flat_data = corrected_data.ravel()
 
                 # Use precomputed points
                 interp_data = griddata(
@@ -91,9 +114,21 @@ def preprocess_data(input_file, output_dir):
             label_data = np.array(data["Bremen_MODIS"][t])
             if label_data.shape != (len(modis_y), len(modis_x)):
                 label_data = label_data.T
+            # Invert y-axis for Bremen MODIS
+            label_data = np.flipud(label_data)
             all_labels[t] = label_data
             # Record mask for label (where NaNs exist)
             all_labels_mask[t] = np.isnan(all_labels[t])
+
+            # After processing the timestep, visualize it
+            visualize_timestep(
+                modis_x, 
+                modis_y,
+                inputs=timestep_inputs,
+                label=all_labels[t],
+                timestep=t,
+                output_dir=visualization_dir
+            )
 
         # 处理NaN值 - 用0替换NaN（表示陆地）
         all_inputs = np.nan_to_num(all_inputs, nan=0.0)

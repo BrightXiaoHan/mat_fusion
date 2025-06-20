@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import os
 
 import h5py
 import matplotlib.dates as mdates
@@ -138,6 +139,65 @@ def visualize_sea_ice_overview(data_file, save_plots=True):
         if save_plots:
             plt.savefig("sea_ice_overview.png", dpi=300, bbox_inches="tight")
         plt.close()  # 关闭图形释放内存
+
+
+def visualize_timestep(modis_x, modis_y, inputs, label, timestep, output_dir):
+    """
+    Visualize one timestep of preprocessed data and save to file.
+    
+    Args:
+        modis_x: 1D array of x coordinates
+        modis_y: 1D array of y coordinates
+        inputs: List of 5 input arrays (each 2D)
+        label: 2D label array
+        timestep: Current timestep index
+        output_dir: Output directory for images
+    """
+    # Names for the input channels
+    input_names = ["Bremen_ASI", "NSIDC_CDR", "NSIDC_NT2", "OSI401", "OSI408"]
+    
+    # Create figure with 6 subplots (5 inputs + 1 label)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    axes = axes.flatten()
+    
+    # Compute aspect ratio
+    x_min, x_max = modis_x.min(), modis_x.max()
+    y_min, y_max = modis_y.min(), modis_y.max()
+    aspect_ratio = (x_max - x_min) / (y_max - y_min)
+    
+    # Plot each input channel
+    for i in range(5):
+        ax = axes[i]
+        data = inputs[i]
+        masked_data = np.ma.masked_invalid(data)
+        cmap = plt.cm.Blues.copy()
+        cmap.set_bad('gray', 1.0)
+        mesh = ax.pcolormesh(modis_x, modis_y, masked_data, 
+                            cmap=cmap, shading='auto', vmin=0, vmax=1)
+        ax.set_title(input_names[i])
+        ax.set_aspect(aspect_ratio)
+        ax.invert_yaxis()
+        plt.colorbar(mesh, ax=ax, shrink=0.6)
+    
+    # Plot the label
+    ax = axes[5]
+    masked_label = np.ma.masked_invalid(label)
+    mesh = ax.pcolormesh(modis_x, modis_y, masked_label, 
+                        cmap=cmap, shading='auto', vmin=0, vmax=1)
+    ax.set_title("Bremen_MODIS (Label)")
+    ax.set_aspect(aspect_ratio)
+    ax.invert_yaxis()
+    plt.colorbar(mesh, ax=ax, shrink=0.6)
+    
+    # Set main title and layout
+    fig.suptitle(f"Timestep {timestep}", fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    
+    # Save figure
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(os.path.join(output_dir, f"timestep_{timestep:04d}.png"), 
+                dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
 
 def main():
