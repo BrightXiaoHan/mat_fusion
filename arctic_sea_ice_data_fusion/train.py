@@ -1,151 +1,196 @@
 import os
-
-import torch
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
+import numpy as np
+import h5py
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from .dataset import SeaIceDataset
-from .model import UNet
+from .model import SeaIceXGBoostModel
 
 
-def masked_mse_loss(pred, target, mask):
+def load_data_for_xgboost(data_dir):
     """
-    Calculate MSE loss only on unmasked pixels
+    为XGBoost加载和准备数据
 
     Args:
-        pred: predicted tensor (B, 1, H, W)
-        target: ground truth tensor (B, 1, H, W)
-        mask: boolean mask tensor (B, 1, H, W) where True indicates invalid pixel
+        data_dir: 数据目录
+        
+    Returns:
+        训练、验证和测试数据
     """
-    # Invert mask: True -> valid pixel, False -> invalid
-    valid_mask = ~mask
-
-    # Calculate squared error only on valid pixels
-    squared_error = (pred - target) ** 2
-    squared_error[~valid_mask] = 0  # Zero out invalid pixels
-
-    # Count valid pixels per sample
-    num_valid = valid_mask.sum(dim=(1, 2, 3))
-
-    # Calculate loss per sample and average
-    loss_per_sample = squared_error.sum(dim=(1, 2, 3)) / (num_valid + 1e-8)
-    return loss_per_sample.mean()
+    # 加载数据集
+    datasets = {}
+    for split in ['train', 'val', 'test']:
+        file_path = os.path.join(data_dir, f"{split}_data.h5")
+        with h5py.File(file_path, "r") as f:
+            datasets[split] = {
+                'inputs': f["inputs"][:],
+                'labels': f["labels"][:],
+                'inputs_mask': f["inputs_mask"][:],
+                'labels_mask': f["labels_mask"][:]
+            }
+    
+    return datasets
 
 
 def train_model():
-    # Configuration
+    """
+    训练XGBoost模型进行海冰密集度数据融合
+    """
+    # 配置
     data_dir = "cache"
-    log_dir = "logs"
     checkpoint_dir = "checkpoints"
-    num_epochs = 100
-    learning_rate = 1e-4
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log_dir = "logs"
 
-    # Create directories
-    os.makedirs(log_dir, exist_ok=True)
+    # 创建目录
     os.makedirs(checkpoint_dir, exist_ok=True)
-
-    # Initialize model, loss, and optimizer
-    model = UNet(n_channels=5, n_classes=1).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-    # Create datasets and dataloaders with batch_size=1
-    train_dataset = SeaIceDataset("train", data_dir=data_dir)
-    val_dataset = SeaIceDataset("val", data_dir=data_dir)
-
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=2)
-
-    # Tensorboard writer
-    writer = SummaryWriter(log_dir)
-
-    # Training variables
-    best_val_loss = float("inf")
-    start_epoch = 0
-
-    # Check for existing checkpoint
-    checkpoint_path = os.path.join(checkpoint_dir, "best_model.pth")
-    if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        best_val_loss = checkpoint["best_val_loss"]
-        start_epoch = checkpoint["epoch"] + 1
-        print(f"Resuming training from epoch {start_epoch}")
-
-    # Training loop
-    for epoch in range(start_epoch, num_epochs):
-        model.train()
-        epoch_train_loss = 0.0
-        train_step = 0
-
-        # Training phase
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [Train]"):
-            # Move data to device
-            inputs = batch["input"].to(device)
-            labels = batch["label"].to(device)
-            label_masks = batch["label_mask"].to(device)
-
-            # Forward pass
-            outputs = model(inputs)
-
-            # Calculate loss
-            loss = masked_mse_loss(outputs, labels, label_masks)
-
-            # Backward pass and optimize
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            # Accumulate loss
-            epoch_train_loss += loss.item()
-            train_step += 1
-
-        # Calculate average training loss
-        avg_train_loss = epoch_train_loss / train_step
-        writer.add_scalar("Loss/train", avg_train_loss, epoch)
-
-        # Validation phase
-        model.eval()
-        epoch_val_loss = 0.0
-        val_step = 0
-
-        with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [Val]"):
-                inputs = batch["input"].to(device)
-                labels = batch["label"].to(device)
-                label_masks = batch["label_mask"].to(device)
-
-                outputs = model(inputs)
-                loss = masked_mse_loss(outputs, labels, label_masks)
-
-                epoch_val_loss += loss.item()
-                val_step += 1
-
-        avg_val_loss = epoch_val_loss / val_step
-        writer.add_scalar("Loss/val", avg_val_loss, epoch)
-
-        print(
-            f"Epoch {epoch + 1}/{num_epochs} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}"
-        )
-
-        # Save checkpoint if validation loss improves
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_val_loss": best_val_loss,
-                },
-                checkpoint_path,
-            )
-            print(f"Saved new best model with val loss: {best_val_loss:.6f}")
-
-    print("Training complete!")
-    writer.close()
+    os.makedirs(log_dir, exist_ok=True)
+    
+    print("正在加载数据集...")
+    datasets = load_data_for_xgboost(data_dir)
+    
+    # 初始化模型
+    model = SeaIceXGBoostModel(
+        max_depth=8,
+        learning_rate=0.1,
+        n_estimators=2000,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42
+    )
+    
+    print("正在准备训练数据...")
+    X_train, y_train = model.prepare_data(
+        datasets['train']['inputs'],
+        datasets['train']['labels'],
+        datasets['train']['inputs_mask'],
+        datasets['train']['labels_mask']
+    )
+    
+    print("正在准备验证数据...")
+    X_val, y_val = model.prepare_data(
+        datasets['val']['inputs'],
+        datasets['val']['labels'],
+        datasets['val']['inputs_mask'],
+        datasets['val']['labels_mask']
+    )
+    
+    print("正在准备测试数据...")
+    X_test, y_test = model.prepare_data(
+        datasets['test']['inputs'],
+        datasets['test']['labels'],
+        datasets['test']['inputs_mask'],
+        datasets['test']['labels_mask']
+    )
+    
+    print(f"训练集: {X_train.shape[0]} 个样本")
+    print(f"验证集: {X_val.shape[0]} 个样本")
+    print(f"测试集: {X_test.shape[0]} 个样本")
+    
+    # 训练模型
+    print("开始训练XGBoost模型...")
+    model.train(X_train, y_train, X_val, y_val, early_stopping_rounds=100)
+    
+    # 评估模型
+    print("评估训练集性能...")
+    train_metrics = model.evaluate(X_train, y_train)
+    print(f"训练集 - RMSE: {train_metrics['rmse']:.4f}, R²: {train_metrics['r2']:.4f}")
+    
+    print("评估验证集性能...")
+    val_metrics = model.evaluate(X_val, y_val)
+    print(f"验证集 - RMSE: {val_metrics['rmse']:.4f}, R²: {val_metrics['r2']:.4f}")
+    
+    print("评估测试集性能...")
+    test_metrics = model.evaluate(X_test, y_test)
+    print(f"测试集 - RMSE: {test_metrics['rmse']:.4f}, R²: {test_metrics['r2']:.4f}")
+    
+    # 保存模型
+    model_path = os.path.join(checkpoint_dir, "xgboost_model.pkl")
+    model.save_model(model_path)
+    print(f"模型已保存到: {model_path}")
+    
+    # 获取并打印特征重要性
+    feature_importance = model.get_feature_importance()
+    print("\n特征重要性:")
+    for feature, importance in sorted(feature_importance.items(), key=lambda x: x[1], reverse=True):
+        print(f"{feature}: {importance:.4f}")
+    
+    # 绘制特征重要性图
+    plt.figure(figsize=(10, 6))
+    features = list(feature_importance.keys())
+    importances = [feature_importance[f] for f in features]
+    
+    plt.barh(features, importances)
+    plt.xlabel('重要性')
+    plt.title('XGBoost特征重要性')
+    plt.tight_layout()
+    
+    importance_plot_path = os.path.join(log_dir, "feature_importance.png")
+    plt.savefig(importance_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"特征重要性图已保存到: {importance_plot_path}")
+    
+    # 绘制真实值vs预测值散点图
+    plt.figure(figsize=(12, 4))
+    
+    # 训练集
+    plt.subplot(1, 3, 1)
+    y_train_pred = model.predict(X_train)
+    plt.scatter(y_train, y_train_pred, alpha=0.5, s=1)
+    plt.plot([y_train.min(), y_train.max()], [y_train.min(), y_train.max()], 'r--', lw=2)
+    plt.xlabel('真实值')
+    plt.ylabel('预测值')
+    plt.title(f'训练集 (R²={train_metrics["r2"]:.3f})')
+    
+    # 验证集
+    plt.subplot(1, 3, 2)
+    y_val_pred = model.predict(X_val)
+    plt.scatter(y_val, y_val_pred, alpha=0.5, s=1)
+    plt.plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], 'r--', lw=2)
+    plt.xlabel('真实值')
+    plt.ylabel('预测值')
+    plt.title(f'验证集 (R²={val_metrics["r2"]:.3f})')
+    
+    # 测试集
+    plt.subplot(1, 3, 3)
+    y_test_pred = model.predict(X_test)
+    plt.scatter(y_test, y_test_pred, alpha=0.5, s=1)
+    plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2)
+    plt.xlabel('真实值')
+    plt.ylabel('预测值')
+    plt.title(f'测试集 (R²={test_metrics["r2"]:.3f})')
+    
+    plt.tight_layout()
+    prediction_plot_path = os.path.join(log_dir, "prediction_comparison.png")
+    plt.savefig(prediction_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"预测对比图已保存到: {prediction_plot_path}")
+    
+    # 保存评估结果
+    results = {
+        'train': train_metrics,
+        'val': val_metrics,
+        'test': test_metrics,
+        'feature_importance': feature_importance
+    }
+    
+    results_path = os.path.join(log_dir, "training_results.txt")
+    with open(results_path, 'w', encoding='utf-8') as f:
+        f.write("XGBoost海冰密集度数据融合模型训练结果\n")
+        f.write("=" * 50 + "\n\n")
+        
+        for split, metrics in [('训练集', train_metrics), ('验证集', val_metrics), ('测试集', test_metrics)]:
+            f.write(f"{split}:\n")
+            f.write(f"  RMSE: {metrics['rmse']:.6f}\n")
+            f.write(f"  MSE: {metrics['mse']:.6f}\n")
+            f.write(f"  R²: {metrics['r2']:.6f}\n\n")
+        
+        f.write("特征重要性:\n")
+        for feature, importance in sorted(feature_importance.items(), key=lambda x: x[1], reverse=True):
+            f.write(f"  {feature}: {importance:.6f}\n")
+    
+    print(f"训练结果已保存到: {results_path}")
+    print("训练完成!")
 
 
 if __name__ == "__main__":

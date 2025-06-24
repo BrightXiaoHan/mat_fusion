@@ -130,10 +130,6 @@ def preprocess_data(input_file, output_dir):
                 output_dir=visualization_dir
             )
 
-        # 处理NaN值 - 用0替换NaN（表示陆地）
-        all_inputs = np.nan_to_num(all_inputs, nan=0.0)
-        all_labels = np.nan_to_num(all_labels, nan=0.0)
-
         # 划分数据集 (80%训练, 10%验证, 10%测试)
         # 首先生成索引数组
         indices = np.arange(num_timesteps)
