@@ -150,7 +150,7 @@ class SeaIceXGBoostModel:
 
     def predict_image(self, inputs, input_masks):
         """
-        对整个图像进行预测
+        对整个图像进行预测 - 优化版本
 
         Args:
             inputs: 输入图像 (N, H, W, 5)
@@ -167,7 +167,17 @@ class SeaIceXGBoostModel:
         predictions = np.full((n_samples, height, width), np.nan)
         prediction_masks = np.ones((n_samples, height, width), dtype=bool)
 
-        for sample_idx in tqdm(range(n_samples), desc="预测"):
+        print("使用优化的批量预测...")
+        
+        # 收集所有有效像素的特征和位置信息
+        all_features = []
+        all_positions = []  # 存储(sample_idx, row, col)
+        
+        # 对每个样本分别处理以节省内存
+        for sample_idx in tqdm(range(n_samples), desc="准备预测数据"):
+            sample_input = inputs[sample_idx]  # (H, W, 5)
+            sample_mask = input_masks[sample_idx]  # (H, W, 5)
+            
             for row in range(height):
                 for col in range(width):
                     # 准备该像素的特征
@@ -175,20 +185,12 @@ class SeaIceXGBoostModel:
                     valid_pixel = True
 
                     for ch in range(n_channels):
-                        if input_masks[sample_idx, row, col, ch] or np.isnan(
-                            inputs[sample_idx, row, col, ch]
-                        ):
-                            # 处理无效数据
+                        if sample_mask[row, col, ch] or np.isnan(sample_input[row, col, ch]):
+                            # 处理无效数据 - 用其他通道均值填充
                             valid_channels = []
                             for other_ch in range(n_channels):
-                                if not input_masks[
-                                    sample_idx, row, col, other_ch
-                                ] and not np.isnan(
-                                    inputs[sample_idx, row, col, other_ch]
-                                ):
-                                    valid_channels.append(
-                                        inputs[sample_idx, row, col, other_ch]
-                                    )
+                                if not sample_mask[row, col, other_ch] and not np.isnan(sample_input[row, col, other_ch]):
+                                    valid_channels.append(sample_input[row, col, other_ch])
 
                             if valid_channels:
                                 pixel_features.append(np.mean(valid_channels))
@@ -196,18 +198,29 @@ class SeaIceXGBoostModel:
                                 valid_pixel = False
                                 break
                         else:
-                            pixel_features.append(inputs[sample_idx, row, col, ch])
+                            pixel_features.append(sample_input[row, col, ch])
 
                     if valid_pixel:
                         # 添加位置信息
                         pixel_features.extend([row / height, col / width])
+                        all_features.append(pixel_features)
+                        all_positions.append((sample_idx, row, col))
 
-                        # 预测
-                        X_pixel = np.array([pixel_features])
-                        pred = self.model.predict(X_pixel)[0]
-
-                        predictions[sample_idx, row, col] = pred
-                        prediction_masks[sample_idx, row, col] = False
+        if len(all_features) > 0:
+            print(f"对 {len(all_features)} 个有效像素进行批量预测...")
+            
+            # 转换为numpy数组进行批量预测
+            X_batch = np.array(all_features)
+            
+            # 批量预测
+            predictions_batch = self.model.predict(X_batch)
+            
+            # 将预测结果放回原始位置
+            for i, (sample_idx, row, col) in enumerate(all_positions):
+                predictions[sample_idx, row, col] = predictions_batch[i]
+                prediction_masks[sample_idx, row, col] = False
+        else:
+            print("没有找到有效像素进行预测")
 
         return predictions, prediction_masks
 
