@@ -26,6 +26,15 @@ def evaluate():
     evaluate_model()
 
 @cli.command()
+@click.option('--input', required=True, help='Path to input .mat file')
+@click.option('--output', required=True, help='Path to output .mat file')
+@click.option('--model', default='checkpoints/xgboost_model.pkl', help='Path to trained model file')
+def inference(input, output, model):
+    """Run inference on a .mat file and save results"""
+    from arctic_sea_ice_data_fusion.inference import run_inference
+    run_inference(input, output, model)
+
+@cli.command()
 @click.option('--data-file', default='assets/sea_ice_dataset_withoutint.mat', help='Sea ice data file')
 @click.option('--save-plots/--no-save-plots', default=True, help='Save plots to files')
 def visualize(data_file, save_plots):
