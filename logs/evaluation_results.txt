@@ -1,0 +1,18 @@
+XGBoost Sea Ice Concentration Data Fusion Model Evaluation Results
+=================================================================
+
+TRAIN SET:
+  RMSE: 5.988895
+  MSE: 35.866864
+  R²: 0.959966
+
+VAL SET:
+  RMSE: 6.233774
+  MSE: 38.859938
+  R²: 0.955156
+
+TEST SET:
+  RMSE: 5.784185
+  MSE: 33.456794
+  R²: 0.964914
+

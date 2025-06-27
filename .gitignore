@@ -200,7 +200,8 @@ cython_debug/
 results/
 synthetic_data/
 
-results/
-cache/
-logs/
-checkpoints/
+# results/
+# cache/
+# logs/
+# checkpoints/
+*.h5
