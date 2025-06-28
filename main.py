@@ -29,10 +29,14 @@ def evaluate():
 @click.option('--input', required=True, help='Path to input .mat file')
 @click.option('--output', required=True, help='Path to output .mat file')
 @click.option('--model', default='checkpoints/xgboost_model.pkl', help='Path to trained model file')
-def inference(input, output, model):
+@click.option('--full', is_flag=True, help='Save all data including inputs and errors (creates very large files)')
+def inference(input, output, model, full):
     """Run inference on a .mat file and save results"""
-    from arctic_sea_ice_data_fusion.inference import run_inference
-    run_inference(input, output, model)
+    from arctic_sea_ice_data_fusion.inference import run_inference, run_inference_full
+    if full:
+        run_inference_full(input, output, model)
+    else:
+        run_inference(input, output, model)
 
 @cli.command()
 @click.option('--data-file', default='assets/sea_ice_dataset_withoutint.mat', help='Sea ice data file')

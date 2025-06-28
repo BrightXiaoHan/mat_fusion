@@ -178,6 +178,103 @@ def run_inference(input_file, output_file, model_path="checkpoints/xgboost_model
     model = SeaIceXGBoostModel()
     model.load_model(model_path)
     
+    # Initialize arrays for predictions
+    num_timesteps = inputs.shape[0]
+    height, width = inputs.shape[1], inputs.shape[2]
+    predictions = np.empty((num_timesteps, height, width))
+    prediction_masks = np.empty((num_timesteps, height, width), dtype=bool)
+    
+    # Run inference for each timestep
+    print("Running inference...")
+    for t in tqdm(range(num_timesteps)):
+        # Get current timestep data
+        timestep_inputs = inputs[t:t+1]
+        timestep_inputs_mask = inputs_mask[t:t+1]
+        
+        # Predict using model
+        pred, pred_mask = model.predict_image(timestep_inputs, timestep_inputs_mask)
+        predictions[t] = pred[0]
+        prediction_masks[t] = pred_mask[0]
+    
+    # Calculate model metrics
+    print("Calculating metrics...")
+    model_metrics = compute_metrics(predictions, labels, labels_mask)
+    
+    # Calculate input metrics
+    input_metrics = {}
+    channel_names = ['Bremen_ASI', 'NSIDC_CDR', 'NSIDC_NT2', 'OSI401', 'OSI408']
+    for ch, name in enumerate(channel_names):
+        # Flatten arrays and apply valid mask
+        valid_mask = ~inputs_mask[:, :, :, ch] & ~labels_mask & ~np.isnan(labels)
+        if np.any(valid_mask):
+            ch_errors = np.abs(inputs[:, :, :, ch][valid_mask] - labels[valid_mask])
+            rmse = np.sqrt(np.mean(ch_errors ** 2))
+            mae = np.mean(ch_errors)
+            input_metrics[name] = {"rmse": rmse, "mae": mae}
+        else:
+            input_metrics[name] = {"rmse": np.nan, "mae": np.nan}
+    
+    # Apply masks to data by setting masked positions to NaN
+    print("Applying masks...")
+    predictions[prediction_masks] = np.nan
+    labels[labels_mask] = np.nan
+    
+    # Save results to .mat file
+    print(f"Saving results to {output_file}...")
+    with h5py.File(output_file, "w") as f:
+        # Only save predictions and labels with NaN for masked positions
+        f.create_dataset("predictions", data=predictions, compression='gzip', compression_opts=9)
+        f.create_dataset("labels", data=labels, compression='gzip', compression_opts=9)
+        
+        # Save metrics
+        metrics_group = f.create_group("metrics")
+        model_metrics_group = metrics_group.create_group("model")
+        for k, v in model_metrics.items():
+            model_metrics_group.attrs[k] = v
+        
+        input_metrics_group = metrics_group.create_group("inputs")
+        for name, metrics in input_metrics.items():
+            ch_group = input_metrics_group.create_group(name)
+            for k, v in metrics.items():
+                ch_group.attrs[k] = v
+        
+        # Save metadata
+        f.attrs['input_file'] = input_file
+        f.attrs['model_path'] = model_path
+        f.attrs['num_timesteps'] = num_timesteps
+        f.attrs['height'] = height
+        f.attrs['width'] = width
+    
+    print("Inference complete!")
+    print("Model Metrics:")
+    for k, v in model_metrics.items():
+        print(f"  {k}: {v:.6f}")
+    
+    print("\nInput Metrics:")
+    for name, metrics in input_metrics.items():
+        print(f"  {name}:")
+        for k, v in metrics.items():
+            print(f"    {k}: {v:.6f}")
+
+def run_inference_full(input_file, output_file, model_path="checkpoints/xgboost_model.pkl"):
+    """
+    Run inference on a .mat file and save COMPLETE results to a new .mat file.
+    WARNING: This will create very large output files!
+    
+    Args:
+        input_file: Path to input .mat file
+        output_file: Path to output .mat file
+        model_path: Path to trained model file
+    """
+    # Preprocess input data
+    print("Preprocessing input data...")
+    inputs, labels, inputs_mask, labels_mask = preprocess_for_inference(input_file)
+    
+    # Load trained model
+    print("Loading model...")
+    model = SeaIceXGBoostModel()
+    model.load_model(model_path)
+    
     # Initialize arrays for predictions and errors
     num_timesteps = inputs.shape[0]
     height, width = inputs.shape[1], inputs.shape[2]
@@ -225,19 +322,26 @@ def run_inference(input_file, output_file, model_path="checkpoints/xgboost_model
         else:
             input_metrics[name] = {"rmse": np.nan, "mae": np.nan}
     
+    # Apply masks to data by setting masked positions to NaN
+    print("Applying masks...")
+    predictions[prediction_masks] = np.nan
+    labels[labels_mask] = np.nan
+    
+    # Apply input masks to input data and errors
+    for t in range(num_timesteps):
+        for ch in range(5):
+            inputs[t, :, :, ch][inputs_mask[t, :, :, ch]] = np.nan
+            input_errors[t, :, :, ch][inputs_mask[t, :, :, ch]] = np.nan
+    
     # Save results to .mat file
-    print(f"Saving results to {output_file}...")
+    print(f"Saving COMPLETE results to {output_file}...")
+    print("WARNING: This will create a very large file!")
     with h5py.File(output_file, "w") as f:
-        # Save data arrays
-        f.create_dataset("inputs", data=inputs)
-        f.create_dataset("labels", data=labels)
-        f.create_dataset("predictions", data=predictions)
-        f.create_dataset("input_errors", data=input_errors)
-        
-        # Save masks
-        f.create_dataset("inputs_mask", data=inputs_mask)
-        f.create_dataset("labels_mask", data=labels_mask)
-        f.create_dataset("predictions_mask", data=prediction_masks)
+        # Save all data arrays with compression (NaN for masked positions)
+        f.create_dataset("inputs", data=inputs, compression='gzip', compression_opts=9)
+        f.create_dataset("labels", data=labels, compression='gzip', compression_opts=9)
+        f.create_dataset("predictions", data=predictions, compression='gzip', compression_opts=9)
+        f.create_dataset("input_errors", data=input_errors, compression='gzip', compression_opts=9)
         
         # Save metrics
         metrics_group = f.create_group("metrics")
@@ -271,8 +375,13 @@ if __name__ == "__main__":
                         help="Path to output .mat file")
     parser.add_argument("--model", type=str, default="checkpoints/xgboost_model.pkl",
                         help="Path to trained model file")
+    parser.add_argument("--full", action='store_true',
+                        help="Save all data including inputs and errors (creates very large files)")
     
     args = parser.parse_args()
     
     # Run inference
-    run_inference(args.input, args.output, args.model)
+    if args.full:
+        run_inference_full(args.input, args.output, args.model)
+    else:
+        run_inference(args.input, args.output, args.model)
